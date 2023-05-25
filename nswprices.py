@@ -15,6 +15,10 @@ from disnake import SyncWebhook, File, Embed
 
 class NSWFuelPriceTrends:
     base = "https://api.onegov.nsw.gov.au"
+    tzname = "Australia/Sydney"
+    hour_trigger = 8
+    minute_trigger = 58
+    graph_history_days = 30
 
     def __init__(self):
         self.init_scheduler()
@@ -44,7 +48,7 @@ class NSWFuelPriceTrends:
         with open("codes.json") as f:
             self.codes: dict = json.load(f)
 
-        self.tz = tz.gettz("Australia/Sydney")
+        self.tz = tz.gettz(self.tzname)
 
         self.session = Session()
 
@@ -54,8 +58,8 @@ class NSWFuelPriceTrends:
 
         trigger = CronTrigger(
             year="*", month="*", day="*", 
-            hour="8", minute="58", second="0", 
-            timezone="Australia/Sydney"
+            hour=self.hour_trigger, minute=self.minute_trigger, second="0", 
+            timezone=self.tzname
         )
         scheduler.add_job(
             self.update_data, trigger=trigger,
@@ -183,12 +187,11 @@ class NSWFuelPriceTrends:
         now_tz = now.astimezone(self.tz)
 
         # How many days to go back
-        data_history_count = 30
 
         #                       day  raw data
         price_history_raw: dict[str, dict[str, dict]] = {}
         # Create a dictionary that contains each day of raw data fuel prices with the key being day/month.
-        for i in range(0, data_history_count):
+        for i in range(0, self.graph_history_days):
             delta = now_tz-timedelta(days=i)
             try:
                 with open(f"prices/{delta.strftime('%Y/%m/%d.json')}") as f:
@@ -225,7 +228,7 @@ class NSWFuelPriceTrends:
         for prices in price_history.values():
             spaced_dates = []
             for i, d in enumerate(list(price_history_raw.keys())):
-                if i % (data_history_count/10) != 0 and i != 0:
+                if i % (self.graph_history_days/10) != 0 and i != 0:
                     spaced_dates.append(i*" ")
                 else:
                     spaced_dates.append(d)
@@ -253,7 +256,7 @@ class NSWFuelPriceTrends:
 
         fig.legend(list(price_history.keys()), loc="upper right")
 
-        ax.set_title(f"Fuel Price Averages over the last {data_history_count} days")
+        ax.set_title(f"Fuel Price Averages over the last {self.graph_history_days} days")
         ax.set_xlabel("Date")
         ax.set_ylabel("c/Litre")
 
