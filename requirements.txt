@@ -1,0 +1,5 @@
+disnake
+requests
+matplotlib
+apscheduler
+python-dateutil

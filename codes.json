@@ -1,0 +1,18 @@
+{
+  "E10-U91": "Ethanol 94 / Unleaded 91 (E10-U91)",
+  "E10": "Ethanol 94 (E10)",
+  "U91": "Unleaded 91 (U91)",
+  "E85": "Ethanol 105 (E85)",
+  "P95-P98": "Premium 95 / Premium 98 (P95-P98)",
+  "P95": "Premium 95 (P95)",
+  "P98": "Premium 98 (P98)",
+  "DL-PDL": "Diesel / Premium Diesel (DL-PDL)",
+  "DL": "Diesel (DL)",
+  "PDL": "Premium Diesel (PDL)",
+  "B20": "Biodiesel 20 (B20)",
+  "LPG": "LPG (LPG)",
+  "LNG": "LNG (LNG)",
+  "H2": "Hydrogen (H2)",
+  "CNG": "CNG/NGV (CNG)",
+  "EV": "EV charge (EV)"
+}
