@@ -16,6 +16,6 @@ I didn't make this to share but these basic setup should get you far enough to g
 
 1. Create an account and subscribe to the Fuel API [here](https://api.nsw.gov.au/Product/Index/22)
 2. Rename exampleconfig.json to config.json and fill in the necessary variables
-3. Modify the script to output to your service of choice and customise the desired notification time. Currently the script outputs to a https://ntfy.sh server
+3. Modify the script to output to your service of choice and customise the desired notification time. Currently the script outputs to a https://ntfy.sh server, or a discord webhook
 4. Install dependencies from requirements.txt
 5. Run the script, ideally as a service
