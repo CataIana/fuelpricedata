@@ -7,5 +7,7 @@
     "ntfy_attachment_uri_domain": "https://somedomaintoserveimages",
     "ntfy_token": "",
     "enable_discord": false,
-    "discord_webhook": "https://discord.com/somewebhookurl"
+    "discord_webhook": "https://discord.com/somewebhookurl",
+    "enable_uptime_kuma": false,
+    "uptime_kuma_uri": ""
 }

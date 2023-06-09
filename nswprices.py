@@ -7,8 +7,6 @@ from datetime import datetime, timedelta, timezone
 from time import sleep
 from io import BytesIO
 import matplotlib.pyplot as plt
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.cron import CronTrigger
 from dateutil import tz
 from requests import Session
 from disnake import SyncWebhook, File, Embed
@@ -21,8 +19,6 @@ class NSWFuelPriceTrends:
     graph_history_days = 30
 
     def __init__(self):
-        self.init_scheduler()
-
         # Init log
         self.log: logging.Logger = logging.getLogger("Fuel Price Trends")
         self.log.setLevel(logging.INFO)
@@ -44,6 +40,8 @@ class NSWFuelPriceTrends:
         self.ntfy_token: str = config.get("ntfy_token")
         self.enable_discord: bool = config["enable_discord"]
         self.discord_webhook: str = config["discord_webhook"]
+        self.enable_uptime_kuma: bool = config["enable_uptime_kuma"]
+        self.uptime_kuma_uri: str = config.get("uptime_kuma_uri")
 
         with open("codes.json") as f:
             self.codes: dict = json.load(f)
@@ -52,29 +50,8 @@ class NSWFuelPriceTrends:
 
         self.session = Session()
 
-    def init_scheduler(self):
-        scheduler = BackgroundScheduler()
-        scheduler.start()
-
-        trigger = CronTrigger(
-            year="*", month="*", day="*", 
-            hour=self.hour_trigger, minute=self.minute_trigger, second="0", 
-            timezone=self.tzname
-        )
-        scheduler.add_job(
-            self.update_data, trigger=trigger,
-            name="Daily Fuel Check"
-        )
-
-    def main(self):
-        # Check if today's data has been requested, otherwise just loop
-        self.fetch_access_token()
-        self.fetch_todays_prices()
-        # self.generate_graph() 
-        while True:
-            sleep(5)
-
     def to_b64(self, data: str) -> str:
+        """Used to encode the API Client ID & Secret to get an access token"""
         return b64encode(data.encode("utf-8")).decode()
 
     def utcnow(self) -> datetime:
@@ -82,6 +59,7 @@ class NSWFuelPriceTrends:
         return datetime.now(timezone.utc)
 
     def get_config(self) -> dict:
+        """Read and parse config file"""
         with open("config.json") as f:
             return json.load(f)
 
@@ -92,29 +70,29 @@ class NSWFuelPriceTrends:
     def get_transaction_id(self) -> str:
         """Get unique transaction ID and iterate by one"""
         config = self.get_config()
-        id = config.get("transaction_id", 0)
-        config["transaction_id"] = id + 1
+        config["transaction_id"] = config.get("transaction_id", 0) + 1
         self.write_config(config)
-        return str(id)
+        return str(config["transaction_id"])
 
-    def access_token_expired(self, config: dict) -> bool:
+    def is_access_token_expired(self, config: dict) -> bool:
         return config.get("expires_at", 0) < datetime.utcnow().timestamp() or not config.get("access_token", None)
 
     def fetch_access_token(self) -> None:
         """Fetches new access token if needed or assigns a cached token to self.access_token"""
         config = self.get_config()
-        if self.access_token_expired(config):
+        if self.is_access_token_expired(config):
+            self.log.info("Fetching new access token")
             header = {
                 "Authorization": f"Basic {self.to_b64(f'{self.api_key}:{self.api_secret}')}"
             }
             response = self.session.get(
                 f"{self.base}/oauth/client_credential/accesstoken?grant_type=client_credentials", headers=header)
             rj = response.json()
-            self.access_token = rj["access_token"]
-            config["access_token"] = rj["access_token"]
-            # Write expires in date, removing 10 minutes just in case
+            self.access_token, config["access_token"] = rj["access_token"], rj["access_token"]
+            # Write expires_in date, removing 10 minutes just in case
             config["expires_at"] = int(datetime.utcnow().timestamp()) + int(rj["expires_in"]) - 600
             self.write_config(config)
+            self.log.info("Got access token")
         else:
             self.access_token = config["access_token"]
 
@@ -126,7 +104,9 @@ class NSWFuelPriceTrends:
             with open(file_date) as f:
                 return json.load(f)
         except (FileNotFoundError, json.decoder.JSONDecodeError):
-            self.log.warning("Today's prices not found, fetching new")
+            pass
+
+        self.log.info("Fetching today's prices")
 
         # Make request for new prices
         header = {
@@ -175,6 +155,7 @@ class NSWFuelPriceTrends:
                 total_prices[station["fueltype"]] = []
             total_prices[station["fueltype"]].append(station["price"])
 
+        self.log.info("Fuel Averages and Station Count")
         for fuel_type, total in total_prices.items():
             print(
                 f"{self.codes[fuel_type]}: {round(sum(total)/len(total), 2)} || Stations: {len(total)}")
@@ -185,6 +166,8 @@ class NSWFuelPriceTrends:
         now = now or self.utcnow()
         fig, ax = plt.subplots()
         now_tz = now.astimezone(self.tz)
+        
+        self.log.info("Generating graph")
 
         # How many days to go back
 
@@ -282,6 +265,7 @@ class NSWFuelPriceTrends:
                         }
                     )
             r.raise_for_status()
+            self.log.info("Sent ntfy.sh notification")
         elif self.enable_discord:
             bytes = BytesIO()
             plt.savefig(bytes, format='png')
@@ -290,11 +274,14 @@ class NSWFuelPriceTrends:
             embed = Embed(title=f"Today's fuel averages ({now.strftime('%Y/%m/%d')}", description=changes_readable)
             embed.set_image(url="attachment://graph.png")
             hook.send(embed=embed, file=File(fp=bytes, filename="graph.png"))
+            self.log.info("Sent discord notification")
         plt.clf()
         plt.close()
+        if self.enable_uptime_kuma:
+            self.session.get(self.uptime_kuma_uri)
 
 
 
 if __name__ == "__main__":
     p = NSWFuelPriceTrends()
-    p.main()
+    p.update_data()
