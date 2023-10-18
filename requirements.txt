@@ -3,3 +3,4 @@ requests
 matplotlib
 apscheduler
 python-dateutil
+influx-client

@@ -4,12 +4,17 @@ import os
 import sys
 from base64 import b64encode
 from datetime import datetime, timedelta, timezone
-from time import sleep
 from io import BytesIO
+
 import matplotlib.pyplot as plt
 from dateutil import tz
+from disnake import Embed, File, SyncWebhook
+import influxdb_client
+from influxdb_client.domain import WritePrecision
+from influxdb_client.client.exceptions import InfluxDBError
+from influxdb_client.client.write_api import SYNCHRONOUS
 from requests import Session
-from disnake import SyncWebhook, File, Embed
+
 
 class NSWFuelPriceTrends:
     base = "https://api.onegov.nsw.gov.au"
@@ -42,8 +47,13 @@ class NSWFuelPriceTrends:
         self.discord_webhook: str = config["discord_webhook"]
         self.enable_uptime_kuma: bool = config["enable_uptime_kuma"]
         self.uptime_kuma_uri: str = config.get("uptime_kuma_uri")
+        self.enable_influx: bool = config["enable_influx"]
+        self.influx_token: str = config["influx_token"]
+        self.influx_uri: str = config["influx_uri"]
+        self.influx_organization: str = config["influx_organization"]
+        self.influx_bucket: str = config["influx_bucket"]
 
-        with open("codes.json") as f:
+        with open("codes.json", encoding="utf-8") as f:
             self.codes: dict = json.load(f)
 
         self.tz = tz.gettz(self.tzname)
@@ -60,11 +70,11 @@ class NSWFuelPriceTrends:
 
     def get_config(self) -> dict:
         """Read and parse config file"""
-        with open("config.json") as f:
+        with open("config.json", encoding="utf-8") as f:
             return json.load(f)
 
     def write_config(self, config: dict):
-        with open("config.json", "w") as f:
+        with open("config.json", "w", encoding="utf-8") as f:
             f.write(json.dumps(config, indent=4))    
 
     def get_transaction_id(self) -> str:
@@ -165,8 +175,9 @@ class NSWFuelPriceTrends:
     def generate_graph(self, now: datetime = None):
         now = now or self.utcnow()
         fig, ax = plt.subplots()
-        now_tz = now.astimezone(self.tz)
-        
+        now_tz_inaccurate = now.astimezone(self.tz)
+        now_tz = datetime(now_tz_inaccurate.year, now_tz_inaccurate.month, now_tz_inaccurate.day, 9, 0, 0, 0, self.tz)
+
         self.log.info("Generating graph")
 
         # How many days to go back
@@ -178,9 +189,9 @@ class NSWFuelPriceTrends:
             delta = now_tz-timedelta(days=i)
             try:
                 with open(f"prices/{delta.strftime('%Y/%m/%d.json')}") as f:
-                    price_history_raw[delta.strftime("%d/%m")] = json.load(f)
+                    price_history_raw[delta.strftime("%d/%m/%Y")] = json.load(f)
             except FileNotFoundError:
-                self.log.warning(f"Failed to get data for day {delta.strftime('%d/%m')}")
+                self.log.warning(f"Failed to get data for day {delta.strftime('%d/%m/%Y')}")
                 continue
 
         # Create a dictionary that contains the averages of each day of fuel data for each fuel type
@@ -202,10 +213,10 @@ class NSWFuelPriceTrends:
                 prices_for_day[station["fueltype"]].append(station["price"])
 
             # Create averages for each day of fuel data
-            for type, prices in prices_for_day.items():
-                if price_history.get(type, None) == None:
-                    price_history[type] = []
-                price_history[type].append(round(sum(prices)/len(prices), 2))
+            for _type, prices in prices_for_day.items():
+                if price_history.get(_type, None) == None:
+                    price_history[_type] = []
+                price_history[_type].append(round(sum(prices)/len(prices), 2))
 
         # Reverse data with [::-1] so that is it from oldest to newest
         for prices in price_history.values():
@@ -214,7 +225,7 @@ class NSWFuelPriceTrends:
                 if i % (self.graph_history_days/10) != 0 and i != 0:
                     spaced_dates.append(i*" ")
                 else:
-                    spaced_dates.append(d)
+                    spaced_dates.append('/'.join(d.split("/")[:-1]))
             ax.plot(spaced_dates[::-1], prices[::-1], marker="o")
 
         # self.log.info("Daily Averages - Newest to Oldest")
@@ -224,9 +235,10 @@ class NSWFuelPriceTrends:
         # Make a percentage based change on data from the previous day
         changes = {}
         for fuel_type, p_avg in price_history.items():
-            diff = round((p_avg[0]-p_avg[1])/((p_avg[0]+p_avg[1])/2)*100, 2)
-            if diff != 0.0:
-                changes[fuel_type] = diff
+            if p_avg[0] != 0 and p_avg[1] != 0:
+                diff = round((p_avg[0]-p_avg[1])/((p_avg[0]+p_avg[1])/2)*100, 2)
+                if diff != 0.0:
+                    changes[fuel_type] = diff
         
         changes_up_or_down = "chart_with_upwards_trend" if sum(changes.values())/len(changes.values()) > 0 else "chart_with_downwards_trend"
 
@@ -266,7 +278,7 @@ class NSWFuelPriceTrends:
                     )
             r.raise_for_status()
             self.log.info("Sent ntfy.sh notification")
-        elif self.enable_discord:
+        if self.enable_discord:
             bytes = BytesIO()
             plt.savefig(bytes, format='png')
             bytes.seek(0)
@@ -279,8 +291,47 @@ class NSWFuelPriceTrends:
         plt.close()
         if self.enable_uptime_kuma:
             self.session.get(self.uptime_kuma_uri)
+            self.log.info("Sent uptime kuma ping")
+        
+        if self.enable_influx:
+            client = influxdb_client.InfluxDBClient(url=self.influx_uri, token=self.influx_token, org=self.influx_organization, timeout=30000)
 
+            query_api = client.query_api()
+            query = 'from(bucket:"fuel_price_data")\
+            |> range(start: -1d)'
 
+            result = query_api.query(org=self.influx_organization, query=query)
+            try:
+                last_data_time = result[0].records[0].get_time()
+            except IndexError:
+                last_data_time = 0
+            if last_data_time != now_tz:
+
+                # Re-parse data here as previous parsed data has some fuel types removed.
+                influx_totals: dict[str, dict[str, dict]] = {}
+                influx_averages = {}
+                for station in price_history_raw[now_tz.strftime("%d/%m/%Y")]["prices"]:
+                    if influx_totals.get(station["fueltype"], None) is None:
+                        influx_totals[station["fueltype"]] = []
+                    influx_totals[station["fueltype"]].append(station["price"])
+                for fuel_type, total in influx_totals.items():
+                    influx_averages[fuel_type] = round(sum(total)/len(total), 2)
+
+                point = influxdb_client.Point.from_dict({
+                    "measurement": "fuel_averages_nsw",
+                    "fields": influx_averages
+                }).time(int(now_tz.astimezone(timezone.utc).timestamp()), write_precision=WritePrecision.S)
+                print(point)
+
+                write_api = client.write_api(write_options=SYNCHRONOUS)
+                write_api.write(
+                    "fuel_price_data",
+                    "meow",
+                    point
+                )
+                self.log.info("Pushed data to influxdb")
+            else:
+                self.log.info("Skipping database push, data already exists")
 
 if __name__ == "__main__":
     p = NSWFuelPriceTrends()
