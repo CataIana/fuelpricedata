@@ -308,27 +308,34 @@ class NSWFuelPriceTrends:
             if last_data_time != now_tz:
 
                 # Re-parse data here as previous parsed data has some fuel types removed.
-                influx_totals: dict[str, dict[str, dict]] = {}
-                influx_averages = {}
+                influx_totals: dict[str, dict[int, int]] = {}
                 for station in price_history_raw[now_tz.strftime("%d/%m/%Y")]["prices"]:
                     if influx_totals.get(station["fueltype"], None) is None:
                         influx_totals[station["fueltype"]] = []
                     influx_totals[station["fueltype"]].append(station["price"])
+                influx_price_data = {k: {} for k in influx_totals.keys()}
                 for fuel_type, total in influx_totals.items():
-                    influx_averages[fuel_type] = round(sum(total)/len(total), 2)
+                    influx_price_data[fuel_type]["mean"] = float(round(sum(total)/len(total), 2))
+                    influx_price_data[fuel_type]["min"] = float(round(min(total), 2))
+                    influx_price_data[fuel_type]["max"] = float(round(max(total), 2))
+                    influx_price_data[fuel_type]["mode"] = float(round(max(set(total), key=total.count), 2))
+                    # influx_price_data[fuel_type]["raw"] = total.values()
 
-                point = influxdb_client.Point.from_dict({
-                    "measurement": "fuel_averages_nsw",
-                    "fields": influx_averages
-                }).time(int(now_tz.astimezone(timezone.utc).timestamp()), write_precision=WritePrecision.S)
-                print(point)
+                for fuel_type, fuel_type_data in influx_totals.items():
+                    point = influxdb_client.Point.from_dict({
+                        "measurement": "fuel_averages_nsw",
+                        "tags": {
+                            "type": fuel_type
+                        },
+                        "fields": fuel_type_data
+                    }).time(int(now_tz.astimezone(timezone.utc).timestamp()), write_precision=WritePrecision.S)
 
-                write_api = client.write_api(write_options=SYNCHRONOUS)
-                write_api.write(
-                    "fuel_price_data",
-                    "meow",
-                    point
-                )
+                    write_api = client.write_api(write_options=SYNCHRONOUS)
+                    write_api.write(
+                        "fuel_price_data",
+                        "meow",
+                        point
+                    )
                 self.log.info("Pushed data to influxdb")
             else:
                 self.log.info("Skipping database push, data already exists")
