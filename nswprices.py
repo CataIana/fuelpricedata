@@ -289,9 +289,6 @@ class NSWFuelPriceTrends:
             self.log.info("Sent discord notification")
         plt.clf()
         plt.close()
-        if self.enable_uptime_kuma:
-            self.session.get(self.uptime_kuma_uri)
-            self.log.info("Sent uptime kuma ping")
         
         if self.enable_influx:
             client = influxdb_client.InfluxDBClient(url=self.influx_uri, token=self.influx_token, org=self.influx_organization, timeout=30000)
@@ -321,9 +318,9 @@ class NSWFuelPriceTrends:
                     influx_price_data[fuel_type]["mode"] = float(round(max(set(total), key=total.count), 2))
                     # influx_price_data[fuel_type]["raw"] = total.values()
 
-                for fuel_type, fuel_type_data in influx_totals.items():
+                for fuel_type, fuel_type_data in influx_price_data.items():
                     point = influxdb_client.Point.from_dict({
-                        "measurement": "fuel_averages_nsw",
+                        "measurement": "fuel_prices_nsw",
                         "tags": {
                             "type": fuel_type
                         },
@@ -333,12 +330,16 @@ class NSWFuelPriceTrends:
                     write_api = client.write_api(write_options=SYNCHRONOUS)
                     write_api.write(
                         "fuel_price_data",
-                        "meow",
+                        self.influx_organization,
                         point
                     )
                 self.log.info("Pushed data to influxdb")
             else:
                 self.log.info("Skipping database push, data already exists")
+
+        if self.enable_uptime_kuma:
+            self.session.get(self.uptime_kuma_uri)
+            self.log.info("Sent uptime kuma ping")
 
 if __name__ == "__main__":
     p = NSWFuelPriceTrends()
