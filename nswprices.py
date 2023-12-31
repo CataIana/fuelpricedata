@@ -64,9 +64,13 @@ class NSWFuelPriceTrends:
         """Used to encode the API Client ID & Secret to get an access token"""
         return b64encode(data.encode("utf-8")).decode()
 
-    def utcnow(self) -> datetime:
-        """Returns a timezone aware UTC Datetime Object"""
-        return datetime.now(timezone.utc)
+    # def utcnow(self) -> datetime:
+    #     """Returns a timezone aware UTC Datetime Object"""
+    #     return datetime.now(timezone.utc)
+
+    def datenow(self) -> datetime:
+        """Returns a timezone aware Datetime Object"""
+        return datetime.now(self.tz)
 
     def get_config(self) -> dict:
         """Read and parse config file"""
@@ -106,10 +110,10 @@ class NSWFuelPriceTrends:
         else:
             self.access_token = config["access_token"]
 
-    def fetch_todays_prices(self, now: datetime = None) -> dict:
-        now = now or self.utcnow()
+    def fetch_todays_prices(self, now: datetime) -> dict:
         # Check if today has already been requested
-        file_date = now.astimezone(self.tz).strftime("prices/%Y/%m/%d.json")
+        print(now)
+        file_date = now.strftime("prices/%Y/%m/%d.json")
         try:
             with open(file_date) as f:
                 return json.load(f)
@@ -144,6 +148,7 @@ class NSWFuelPriceTrends:
 
         # Remove uncessary data to save space
         rj.pop("stations", None)
+        print(f"prices/{now.year}/{now.month:02d}")
         
         # Write newly fetched data
         with open(file_date, "w") as f:
@@ -154,7 +159,7 @@ class NSWFuelPriceTrends:
         # Check if expired and then fetch new token if so
         self.fetch_access_token()
 
-        now = self.utcnow()
+        now = self.datenow()
 
         prices = self.fetch_todays_prices(now)
 
@@ -172,8 +177,7 @@ class NSWFuelPriceTrends:
 
         self.generate_graph(now)
 
-    def generate_graph(self, now: datetime = None):
-        now = now or self.utcnow()
+    def generate_graph(self, now: datetime):
         fig, ax = plt.subplots()
         now_tz_inaccurate = now.astimezone(self.tz)
         now_tz = datetime(now_tz_inaccurate.year, now_tz_inaccurate.month, now_tz_inaccurate.day, 9, 0, 0, 0, self.tz)
