@@ -7,13 +7,13 @@ from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from statistics import median
 
-import influxdb_client
 import matplotlib.pyplot as plt
 from dateutil import tz
 from disnake import Embed, File, SyncWebhook
-from influxdb_client.client.exceptions import InfluxDBError
+from influxdb_client.client.influxdb_client import InfluxDBClient
+from influxdb_client.client.write.point import Point
 from influxdb_client.client.write_api import SYNCHRONOUS
-from influxdb_client.domain import WritePrecision
+from influxdb_client.domain.write_precision import WritePrecision
 from requests import Session
 
 
@@ -39,15 +39,15 @@ class NSWFuelPriceTrends:
         config = self.get_config()
         self.api_key: str = config["api_key"]
         self.api_secret: str = config["api_secret"]
-        self.fuel_types: str = config["fuel_types"]
+        self.fuel_types: list[str] = config["fuel_types"]
         self.enable_ntfy: bool = config["enable_ntfy"]
-        self.ntfy_uri: str = config.get("ntfy_uri")
-        self.ntfy_domain: str = config.get("ntfy_attachment_uri_domain")
-        self.ntfy_token: str = config.get("ntfy_token")
+        self.ntfy_uri: str | None = config.get("ntfy_uri")
+        self.ntfy_domain: str | None = config.get("ntfy_attachment_uri_domain")
+        self.ntfy_token: str | None = config.get("ntfy_token")
         self.enable_discord: bool = config["enable_discord"]
         self.discord_webhook: str = config["discord_webhook"]
         self.enable_uptime_kuma: bool = config["enable_uptime_kuma"]
-        self.uptime_kuma_uri: str = config.get("uptime_kuma_uri")
+        self.uptime_kuma_uri: str | None = config.get("uptime_kuma_uri")
         self.enable_influx: bool = config["enable_influx"]
         self.influx_token: str = config["influx_token"]
         self.influx_uri: str = config["influx_uri"]
@@ -86,7 +86,7 @@ class NSWFuelPriceTrends:
         return str(config["transaction_id"])
 
     def is_access_token_expired(self, config: dict) -> bool:
-        return config.get("expires_at", 0) < datetime.utcnow().timestamp() or not config.get("access_token", None)
+        return config.get("expires_at", 0) < self.datenow().timestamp() or not config.get("access_token", None)
 
     def fetch_access_token(self) -> None:
         """Fetches new access token if needed or assigns a cached token to self.access_token"""
@@ -102,7 +102,7 @@ class NSWFuelPriceTrends:
             self.access_token, config["access_token"] = rj["access_token"], rj["access_token"]
             # Write expires_in date, removing 10 minutes just in case
             config["expires_at"] = int(
-                datetime.utcnow().timestamp()) + int(rj["expires_in"]) - 600
+                self.datenow().timestamp()) + int(rj["expires_in"]) - 600
             self.write_config(config)
             self.log.info("Got access token")
         else:
@@ -130,7 +130,7 @@ class NSWFuelPriceTrends:
             f"{self.base}/FuelPriceCheck/v2/fuel/prices?states=NSW", headers=header)
         if response.status_code != 200:
             self.log.error(f"{response.status_code}: {response.json()}")
-            return
+            return {}
         rj: dict = response.json()
         # Add request timestamp to file for later use
         rj["request_time"] = int(now.timestamp())
@@ -200,11 +200,12 @@ class NSWFuelPriceTrends:
 
         # Create a dictionary that contains the averages of each day of fuel data for each fuel type
         # Data is from newest to oldest
-        price_history: dict[str, list[int]] = {k: [] for k in self.fuel_types}
+        price_history: dict[str, list[float]] = {
+            k: [] for k in self.fuel_types}
 
         for day in price_history_raw.values():
 
-            prices_for_day: dict[str, list[int]] = {}
+            prices_for_day: dict[str, list[float]] = {}
 
             for station in day["prices"]:
                 # Ignore fuel types not in list
@@ -273,7 +274,7 @@ class NSWFuelPriceTrends:
         plt.grid(True)
         location = now_tz.strftime("%Y/%m/%d")
         plt.savefig(f"archive/{location}.png", format='png')
-        if self.enable_ntfy:
+        if self.enable_ntfy and self.ntfy_uri and self.ntfy_domain and self.ntfy_token:
             r = self.session.put(self.ntfy_uri,
                                  data=f"Today's fuel averages\n{changes_readable}",
                                  headers={
@@ -299,7 +300,7 @@ class NSWFuelPriceTrends:
         plt.close()
 
         if self.enable_influx:
-            client = influxdb_client.InfluxDBClient(
+            client = InfluxDBClient(
                 url=self.influx_uri, token=self.influx_token, org=self.influx_organization, timeout=30000)
 
             query_api = client.query_api()
@@ -314,11 +315,13 @@ class NSWFuelPriceTrends:
             if last_data_time != now_tz:
 
                 # Re-parse data here as previous parsed data has some fuel types removed.
-                influx_totals: dict[str, dict[int, int]] = {}
+                influx_totals: dict[str, list[float]] = {}
                 for station in price_history_raw[now_tz.strftime("%d/%m/%Y")]["prices"]:
                     if influx_totals.get(station["fueltype"], None) is None:
                         influx_totals[station["fueltype"]] = []
                     influx_totals[station["fueltype"]].append(station["price"])
+
+
                 influx_price_data = {k: {} for k in influx_totals.keys()}
                 for fuel_type, total in influx_totals.items():
                     influx_price_data[fuel_type]["mean"] = float(
@@ -334,7 +337,7 @@ class NSWFuelPriceTrends:
                     # influx_price_data[fuel_type]["raw"] = total.values()
 
                 for fuel_type, fuel_type_data in influx_price_data.items():
-                    point = influxdb_client.Point.from_dict({
+                    point = Point.from_dict({
                         "measurement": "fuel_prices_nsw",
                         "tags": {
                             "type": fuel_type
@@ -352,7 +355,7 @@ class NSWFuelPriceTrends:
             else:
                 self.log.info("Skipping database push, data already exists")
 
-        if self.enable_uptime_kuma:
+        if self.enable_uptime_kuma and self.uptime_kuma_uri:
             self.session.get(self.uptime_kuma_uri)
             self.log.info("Sent uptime kuma ping")
 
