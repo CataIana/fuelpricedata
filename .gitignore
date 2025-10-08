@@ -2,3 +2,4 @@ archive/
 prices/
 config.json
 test.py
+venv/
